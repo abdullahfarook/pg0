@@ -37,7 +37,7 @@ This table describes which **binaries** we publish. Whether a binary actually ru
 ## Features
 
 - **Zero dependencies** - single binary, works offline
-- **PostgreSQL 18** with pgvector 0.8.1 bundled
+- **PostgreSQL 18** with pgvector 0.8.5 bundled
 - **Multiple instances** - run multiple PostgreSQL servers simultaneously
 - **Cross-platform** - macOS (Apple Silicon), Linux (x86_64 & ARM64), Windows (x64)
 - **Python SDK** - programmatic control from Python
