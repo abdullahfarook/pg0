@@ -1168,7 +1168,7 @@ fn info(name: String, output_format: OutputFormat) -> Result<(), CliError> {
 
     let output = match instance {
         Some(info) => {
-            let running = is_process_running(info.pid);
+            let running = is_database_healthy(&info);
             if running {
                 let uri = format!(
                     "postgresql://{}:{}@127.0.0.1:{}/{}",
@@ -1276,6 +1276,41 @@ fn find_psql_binary(installation_dir: &PathBuf) -> Result<PathBuf, CliError> {
             installation_dir.display()
         ),
     )))
+}
+
+/// Return whether PostgreSQL is alive *and* can serve a query.
+///
+/// A live postmaster can still be unusable (for example, after its shared
+/// memory has been removed). Do not report such an instance as running:
+/// callers use this status to decide whether it is safe to reuse a database.
+fn is_database_healthy(info: &InstanceInfo) -> bool {
+    if !is_process_running(info.pid) {
+        return false;
+    }
+
+    let psql_path = match find_psql_binary(&info.installation_dir) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    if ensure_runtime_libs_for_psql(&psql_path).is_err() {
+        return false;
+    }
+
+    process::Command::new(psql_path)
+        // Avoid user psql configuration and fail instead of prompting if the
+        // saved instance credentials no longer work.
+        .args(["-X", "-w", "-q", "-v", "ON_ERROR_STOP=1"])
+        .args(["-h", "127.0.0.1", "-p", &info.port.to_string()])
+        .args(["-U", &info.username, "-d", &info.database])
+        .args(["-c", "SELECT 1"])
+        // Keep health checks bounded when a broken backend accepts a TCP
+        // connection but never completes startup or the query.
+        .env("PGCONNECT_TIMEOUT", "1")
+        .env("PGOPTIONS", "-c statement_timeout=1000")
+        .env("PGPASSWORD", &info.password)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn psql(name: String, args: Vec<String>) -> Result<(), CliError> {
@@ -1482,7 +1517,7 @@ fn list(output_format: OutputFormat) -> Result<(), CliError> {
     let mut instances: Vec<InfoOutput> = Vec::new();
     for name in &instance_names {
         if let Some(info) = load_instance(name)? {
-            let running = is_process_running(info.pid);
+            let running = is_database_healthy(&info);
             let output = if running {
                 let uri = format!(
                     "postgresql://{}:{}@127.0.0.1:{}/{}",
@@ -1580,6 +1615,47 @@ fn init_logging(verbose: bool) {
         .with_env_filter(filter)
         .with_target(true)
         .init();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn health_check_requires_a_successful_query() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "pg0-health-check-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin_dir = test_dir.join("18.1.0").join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let psql_path = bin_dir.join("psql");
+        fs::write(
+            &psql_path,
+            "#!/bin/sh\nfor arg do\n  [ \"$arg\" = \"SELECT 1\" ] && exit 0\ndone\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&psql_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let info = InstanceInfo {
+            pid: process::id(),
+            port: 5432,
+            data_dir: test_dir.join("data"),
+            installation_dir: test_dir.clone(),
+            username: "postgres".to_string(),
+            password: "postgres".to_string(),
+            database: "postgres".to_string(),
+            version: "18.1.0".to_string(),
+        };
+
+        assert!(is_database_healthy(&info));
+        fs::remove_dir_all(test_dir).unwrap();
+    }
 }
 
 fn main() {
