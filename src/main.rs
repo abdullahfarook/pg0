@@ -291,12 +291,25 @@ fn is_process_running(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use std::process::Command;
-        Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid)])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // `tasklist` is an external command and can block before `start` emits
+        // any output. Query the process handle directly instead.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+
+            let mut exit_code = 0;
+            let running = GetExitCodeProcess(handle, &mut exit_code) != 0
+                && exit_code == STILL_ACTIVE as u32;
+            let _ = CloseHandle(handle);
+            running
+        }
     }
 }
 

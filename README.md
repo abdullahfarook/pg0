@@ -314,28 +314,6 @@ pg0 logs --name myapp
 
 Logs are stored in `~/.pg0/instances/<name>/data/log/`.
 
-### Installing Extensions
-
-#### pg_textsearch (BM25 full-text search)
-
-[pg_textsearch](https://github.com/timescale/pg_textsearch) adds BM25-ranked full-text search to PostgreSQL. Install it into your pg0 instance with a single command (requires Xcode Command Line Tools on macOS, or `build-essential` on Linux):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/vectorize-io/pg0/main/extensions/install-pgtextsearch.sh | bash
-```
-
-Install a specific version or target a named instance:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/vectorize-io/pg0/main/extensions/install-pgtextsearch.sh | bash -s -- --version v0.5.1 --instance myapp
-```
-
-Then enable it:
-
-```bash
-pg0 psql -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch;"
-```
-
 ### Using pgvector
 
 pgvector is pre-installed. Just enable it:

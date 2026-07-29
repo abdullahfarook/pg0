@@ -2,7 +2,9 @@
 
 import os
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -208,6 +210,37 @@ class TestPg0:
         result = pg.execute("SELECT id FROM restart_test;")
         assert "42" in result
         pg.stop()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific process probe")
+    def test_existing_instance_restart_does_not_hang(self, clean_instance):
+        """Starting an existing instance must not block before PostgreSQL setup.
+
+        Regression test for https://github.com/vectorize-io/pg0/issues/16.
+        Invoke the CLI directly with a timeout so the test covers the process
+        probe without the Python SDK's Windows subprocess wrapper.
+        """
+        pg = Pg0(name=TEST_NAME, port=TEST_PORT)
+        pg.start()
+        pg.stop()
+
+        try:
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                result = subprocess.run(
+                    [pg0._find_pg0(), "start", "--name", TEST_NAME, "--port", str(TEST_PORT)],
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=60,
+                    check=False,
+                )
+
+                stdout.seek(0)
+                stderr.seek(0)
+                assert result.returncode == 0, (
+                    stdout.read().decode("utf-8", errors="replace")
+                    + stderr.read().decode("utf-8", errors="replace")
+                )
+        finally:
+            pg.stop()
 
     @pytest.mark.skipif(
         sys.platform == "win32",
