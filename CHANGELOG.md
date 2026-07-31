@@ -2,6 +2,12 @@
 
 All notable changes to pg0 are documented in this file.
 
+## [0.15.1] - 2026-07-31
+
+### Fixed
+
+- Suppress the Windows console window when the Python SDK launches the pg0 CLI from GUI applications.
+
 ## [0.15.0] - 2026-07-29
 
 ### Added
