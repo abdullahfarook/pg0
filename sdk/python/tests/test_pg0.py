@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 import pytest
 import pg0
@@ -31,6 +32,19 @@ def clean_instance():
 
 class TestPg0:
     """Tests for Pg0 class."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific subprocess flags")
+    def test_windows_runner_hides_console_window(self):
+        """The Python wrapper must not create a console window for pg0.exe.
+
+        Regression test for https://github.com/vectorize-io/pg0/issues/32.
+        """
+        with patch.object(pg0, "_find_pg0", return_value="pg0.exe"), patch.object(
+            pg0.subprocess, "call", return_value=0
+        ) as call:
+            pg0._run_pg0("start")
+
+        assert call.call_args.kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
 
     def test_start_stop(self, clean_instance):
         """Test starting and stopping Pg0."""

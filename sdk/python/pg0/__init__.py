@@ -143,6 +143,9 @@ def _run_pg0(*args: str, check: bool = True) -> subprocess.CompletedProcess:
                     [pg0_path, *args],
                     stdout=out_f,
                     stderr=err_f,
+                    # pg0 is a console executable. Suppress the transient console
+                    # window when it is launched from a GUI Python application.
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 out_f.seek(0)
                 err_f.seek(0)
