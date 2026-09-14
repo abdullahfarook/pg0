@@ -2,7 +2,7 @@
 
 All notable changes to pg0 are documented in this file.
 
-## [Unreleased]
+## [0.15.2] - 2026-09-14
 
 ### Fixed
 
