@@ -41,3 +41,13 @@ All platforms in `build.rs` and `.github/workflows/release-cli.yml` must have:
 - **Build MUST FAIL if any component is missing** for supported platforms
 - No graceful fallbacks - missing components = build failure
 - This ensures platforms are only released when fully functional
+
+## Babelfish flavor (`--features babelfish`)
+
+- Replaces the theseus-rs PostgreSQL + separate pgvector bundle with one tarball from `babelfish_compiled`
+  (Babelfish fork, `babelfishpg_{common,money,tds,tsql}`, ANTLR4, pgvector, pgbouncer). Same rules apply:
+  the build MUST FAIL if anything is missing (`build.rs` checks sha256 and required members).
+- Supported: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` only. macOS is not supported until the
+  Babelfish bundle is built for it.
+- The bundle and the pg0 binary must be built on Ubuntu 22.04 (glibc 2.35 baseline). Never on a rolling distro.
+- `versions.env` sha256 values stay empty until a bundle release exists; the babelfish build fails while empty.

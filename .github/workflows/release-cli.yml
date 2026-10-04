@@ -107,6 +107,43 @@ jobs:
           name: cli-${{ matrix.name }}
           path: pg0-${{ matrix.name }}.exe
 
+  # Babelfish flavor (T-SQL/TDS). Linux glibc only for now; built natively on 22.04 so the
+  # binary stays within the glibc 2.35 baseline. build.rs fails the build if the bundle
+  # from BABELFISH_COMPILED_REPO is missing, mismatched (sha256) or incomplete.
+  build-cli-babelfish:
+    name: Build CLI (Babelfish) ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: linux-x86_64-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            name: linux-aarch64-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --features babelfish --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          cp target/${{ matrix.target }}/release/pg0 pg0-babelfish-${{ matrix.name }}
+          chmod +x pg0-babelfish-${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-babelfish-${{ matrix.name }}
+          path: pg0-babelfish-${{ matrix.name }}
+
   build-python-wheels:
     name: Build Python wheel (${{ matrix.platform }})
     needs: build-cli
@@ -230,7 +267,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-cli, build-python-wheels, build-python-sdist]
+    needs: [build-cli, build-cli-babelfish, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -282,6 +319,7 @@ jobs:
           - `pg0-linux-aarch64-gnu` - Linux ARM64 for Debian/Ubuntu (glibc)
           - `pg0-linux-aarch64-musl` - Linux ARM64 for Alpine (musl, statically linked)
           - `pg0-windows-x86_64.exe` - Windows x64
+          - `pg0-babelfish-linux-x86_64-gnu` / `pg0-babelfish-linux-aarch64-gnu` - Linux glibc with Babelfish (T-SQL over TDS); run `pg0-babelfish start --babelfish`
 
           ### Python Package
           Install from PyPI:

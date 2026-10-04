@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 static POSTGRESQL_BUNDLE: &[u8] = include_bytes!(env!("POSTGRESQL_BUNDLE_PATH"));
 
 /// The embedded pgvector bundle
+#[cfg(not(feature = "babelfish"))]
 static PGVECTOR_BUNDLE: &[u8] = include_bytes!(env!("PGVECTOR_BUNDLE_PATH"));
 
 /// Extra runtime libraries (libxml2.so.2 + the libicu major it transitively
@@ -62,6 +63,31 @@ struct Cli {
 
 const DEFAULT_INSTANCE_NAME: &str = "default";
 
+/// PostgreSQL version bundled in this binary.
+#[cfg(not(feature = "babelfish"))]
+const DEFAULT_PG_VERSION: &str = env!("PG_VERSION");
+#[cfg(feature = "babelfish")]
+const DEFAULT_PG_VERSION: &str = env!("BABELFISH_PG_VERSION");
+
+/// Babelfish installs live apart from stock PostgreSQL ones: the binary lookup helpers
+/// pick the first directory under the installation dir.
+#[cfg(not(feature = "babelfish"))]
+const INSTALLATION_SUBDIR: &str = "installation";
+#[cfg(feature = "babelfish")]
+const INSTALLATION_SUBDIR: &str = "installation-babelfish";
+
+/// Babelfish settings for `pg0 start --babelfish`.
+#[derive(Clone)]
+struct BabelfishConfig {
+    tds_port: u16,
+    migration_mode: String,
+    /// The database Babelfish is installed into (`babelfishpg_tsql.database_name`).
+    database: String,
+}
+
+#[cfg(feature = "babelfish")]
+const BABELFISH_INIT_MARKER: &str = ".pg0_babelfish_initialized";
+
 #[derive(Subcommand)]
 enum Commands {
     /// Start PostgreSQL server
@@ -75,7 +101,7 @@ enum Commands {
         port: Option<u16>,
 
         /// PostgreSQL version (must match bundled version)
-        #[arg(short = 'V', long, default_value = env!("PG_VERSION"))]
+        #[arg(short = 'V', long, default_value = DEFAULT_PG_VERSION)]
         version: String,
 
         /// Data directory (defaults to ~/.pg0/instances/<name>/data)
@@ -98,6 +124,21 @@ enum Commands {
         /// Example: -c shared_buffers=512MB -c work_mem=128MB
         #[arg(short = 'c', long = "config", value_name = "KEY=VALUE")]
         config: Vec<String>,
+
+        /// Run Babelfish: enable the T-SQL/TDS endpoint and initialize it once
+        #[cfg(feature = "babelfish")]
+        #[arg(long)]
+        babelfish: bool,
+
+        /// TDS (SQL Server protocol) port; auto-allocates upward if in use
+        #[cfg(feature = "babelfish")]
+        #[arg(long, default_value_t = 1433, requires = "babelfish")]
+        tds_port: u16,
+
+        /// Babelfish migration mode
+        #[cfg(feature = "babelfish")]
+        #[arg(long, default_value = "multi-db", value_parser = ["multi-db", "single-db"], requires = "babelfish")]
+        babelfish_migration_mode: String,
     },
     /// Stop PostgreSQL server
     Stop {
@@ -192,10 +233,14 @@ struct InstanceInfo {
     password: String,
     database: String,
     version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tds_port: Option<u16>,
 }
 
 #[derive(Serialize)]
 struct InfoOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tds_port: Option<u16>,
     name: String,
     running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -664,8 +709,23 @@ fn ensure_runtime_libs_for_psql(psql_path: &Path) -> Result<(), CliError> {
 /// Prepend `lib_dir` to the process LD_LIBRARY_PATH so that subprocesses
 /// (initdb, postgres, pg_ctl, psql) find the bundled libs first. Existing
 /// entries are preserved.
+///
+/// No-op in Babelfish builds: every binary and module in that bundle has a relative RUNPATH,
+/// and the bundle ships its own libreadline/libssl/... which would otherwise leak into
+/// system tools spawned by pg0 (`sh`, `ldd`) and break them.
 #[cfg(target_os = "linux")]
 fn prepend_lib_dir_to_ld_library_path(lib_dir: &Path) {
+    #[cfg(feature = "babelfish")]
+    {
+        let _ = lib_dir;
+        return;
+    }
+    #[cfg(not(feature = "babelfish"))]
+    prepend_lib_dir_impl(lib_dir);
+}
+
+#[cfg(all(target_os = "linux", not(feature = "babelfish")))]
+fn prepend_lib_dir_impl(lib_dir: &Path) {
     let lib_dir_s = lib_dir.to_string_lossy().to_string();
     let new = match std::env::var("LD_LIBRARY_PATH") {
         Ok(existing) if !existing.is_empty() => {
@@ -723,6 +783,7 @@ fn check_shared_libraries(bin_dir: &std::path::Path) -> Result<(), CliError> {
 }
 
 /// Install pgvector extension files into the PostgreSQL installation
+#[cfg(not(feature = "babelfish"))]
 fn install_pgvector(installation_dir: &PathBuf, pg_version: &str) -> Result<(), CliError> {
     let pg_major = pg_version.split('.').next().unwrap_or("16");
     let pgvector_version = env!("PGVECTOR_VERSION");
@@ -787,6 +848,64 @@ fn install_pgvector(installation_dir: &PathBuf, pg_version: &str) -> Result<(), 
     Ok(())
 }
 
+/// postgresql.conf settings Babelfish needs before the cluster first starts.
+#[cfg(feature = "babelfish")]
+fn babelfish_gucs(b: &BabelfishConfig) -> Vec<(String, String)> {
+    vec![
+        ("listen_addresses".into(), "*".into()),
+        ("allow_system_table_mods".into(), "on".into()),
+        ("shared_preload_libraries".into(), "babelfishpg_tds".into()),
+        ("babelfishpg_tds.listen_addresses".into(), "*".into()),
+        ("babelfishpg_tds.port".into(), b.tds_port.to_string()),
+        // Must be in postgresql.conf before first start: via ALTER SYSTEM + pg_reload_conf()
+        // the reload is asynchronous and sys.initialize_babelfish() can still see the
+        // built-in default database name ("babelfish_db") and fail.
+        ("babelfishpg_tsql.database_name".into(), b.database.clone()),
+        ("babelfishpg_tsql.migration_mode".into(), b.migration_mode.clone()),
+    ]
+}
+
+/// Run the one-time Babelfish initialization (extension + `sys.initialize_babelfish`). A marker file in the data dir makes it idempotent;
+/// the marker is only written after every step succeeded.
+#[cfg(feature = "babelfish")]
+fn init_babelfish_once(
+    installation_dir: &PathBuf,
+    data_dir: &Path,
+    port: u16,
+    username: &str,
+    password: &str,
+    b: &BabelfishConfig,
+) -> Result<(), CliError> {
+    let marker = data_dir.join(BABELFISH_INIT_MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+    println!("Initializing Babelfish (one-time)...");
+    let psql = find_psql_binary(installation_dir)?;
+    let uri = format!("postgresql://postgres:{}@127.0.0.1:{}/{}", password, port, b.database);
+    let user_lit = username.replace('\'', "''");
+    let sql = [
+        "CREATE EXTENSION IF NOT EXISTS babelfishpg_tds CASCADE;".to_string(),
+        format!("CALL sys.initialize_babelfish('{}');", user_lit),
+    ];
+    for stmt in sql {
+        let out = std::process::Command::new(&psql)
+            .arg(&uri)
+            .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
+            .arg(&stmt)
+            .output()?;
+        if !out.status.success() {
+            return Err(CliError::Other(format!(
+                "Babelfish initialization failed at `{}`:\n{}",
+                stmt,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+    }
+    fs::write(&marker, b"")?;
+    Ok(())
+}
+
 fn start(
     name: String,
     port: u16,
@@ -797,6 +916,7 @@ fn start(
     password: String,
     database: String,
     config: Vec<String>,
+    babelfish: Option<BabelfishConfig>,
 ) -> Result<(), CliError> {
     // Check if already running
     if let Some(info) = load_instance(&name)? {
@@ -823,7 +943,7 @@ fn start(
         None => instance_dir.join("data"),
     };
 
-    let installation_dir = base_dir.join("installation");
+    let installation_dir = base_dir.join(INSTALLATION_SUBDIR);
 
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&installation_dir)?;
@@ -870,6 +990,23 @@ fn start(
         }
     }
 
+    // Babelfish: the TDS port must be free, and the GUCs go in before the cluster first starts.
+    #[cfg(feature = "babelfish")]
+    let babelfish = babelfish.map(|mut b| {
+        if !is_port_available(b.tds_port) || b.tds_port == port {
+            let new_port = find_available_port(b.tds_port.max(port.saturating_add(1)));
+            println!("TDS port {} is in use, using port {} instead.", b.tds_port, new_port);
+            b.tds_port = new_port;
+        }
+        b
+    });
+    #[cfg(feature = "babelfish")]
+    if let Some(b) = &babelfish {
+        for (k, v) in babelfish_gucs(b) {
+            configuration.entry(k).or_insert(v); // explicit -c values win
+        }
+    }
+
     // Extract bundled PostgreSQL
     let version_install_dir = extract_bundled_postgresql(&installation_dir, &version)?;
 
@@ -877,7 +1014,9 @@ fn start(
     // rejects localized names like "Turkish_Türkiye.1252" (#35).
     // postgresql_embedded can't pass --locale, so initialize the cluster
     // ourselves; setup() then skips its own initdb.
-    #[cfg(windows)]
+    // Babelfish also needs this: its ICU collations require a UTF8 database, and initdb would
+    // otherwise pick SQL_ASCII under an unset/POSIX locale (containers, CI).
+    #[cfg(any(windows, feature = "babelfish"))]
     if !data_dir.join("postgresql.conf").exists() {
         init_data_dir(&version_install_dir, &data_dir, &password)?;
     }
@@ -899,7 +1038,8 @@ fn start(
     let mut postgresql = PostgreSQL::new(settings);
     postgresql.setup()?;
 
-    // Install pgvector extension
+    // Install pgvector extension (the Babelfish bundle ships it already)
+    #[cfg(not(feature = "babelfish"))]
     if let Err(e) = install_pgvector(&installation_dir, &version) {
         eprintln!("Warning: Failed to install pgvector: {}", e);
         eprintln!("You can try installing it manually with: pg0 install-extension vector");
@@ -957,6 +1097,11 @@ fn start(
         }
     }
 
+    #[cfg(feature = "babelfish")]
+    if let Some(b) = &babelfish {
+        init_babelfish_once(&installation_dir, &data_dir, port, &username, &password, b)?;
+    }
+
     // Read PID from postmaster.pid file
     let pid = read_postmaster_pid(&data_dir)?;
 
@@ -969,6 +1114,7 @@ fn start(
         password: password.clone(),
         database: database.clone(),
         version: version.clone(),
+        tds_port: babelfish.as_ref().map(|b| b.tds_port),
     };
 
     save_instance(&name, &info)?;
@@ -982,11 +1128,20 @@ fn start(
     println!("  Password: {}", password);
     println!("  Database: {}", database);
     println!("  Data dir: {}", data_dir.display());
+    if let Some(b) = &babelfish {
+        println!("  TDS port: {} (SQL Server protocol, migration mode: {})", b.tds_port, b.migration_mode);
+    }
     println!();
     println!(
         "Connection URI: postgresql://{}:{}@127.0.0.1:{}/{}",
         username, password, port, database
     );
+    if let Some(b) = &babelfish {
+        println!(
+            "T-SQL: tsql -H 127.0.0.1 -p {} -U {} -P {} -D master",
+            b.tds_port, username, password
+        );
+    }
     println!();
     if name == DEFAULT_INSTANCE_NAME {
         println!("Use 'pg0 stop' to stop the server.");
@@ -1253,6 +1408,7 @@ fn info(name: String, output_format: OutputFormat) -> Result<(), CliError> {
                     info.username, info.password, info.port, info.database
                 );
                 InfoOutput {
+                    tds_port: info.tds_port,
                     name: name.clone(),
                     running: true,
                     pid: info.pid,
@@ -1266,6 +1422,7 @@ fn info(name: String, output_format: OutputFormat) -> Result<(), CliError> {
             } else {
                 // Stopped but instance exists - show data_dir
                 InfoOutput {
+                    tds_port: info.tds_port,
                     name: name.clone(),
                     running: false,
                     pid: None,
@@ -1281,6 +1438,7 @@ fn info(name: String, output_format: OutputFormat) -> Result<(), CliError> {
         None => {
             // Instance doesn't exist
             InfoOutput {
+                tds_port: None,
                 name: name.clone(),
                 running: false,
                 pid: None,
@@ -1307,6 +1465,9 @@ fn info(name: String, output_format: OutputFormat) -> Result<(), CliError> {
                 println!("  Username: {}", output.username.as_ref().unwrap());
                 println!("  Database: {}", output.database.as_ref().unwrap());
                 println!("  Data dir: {}", output.data_dir.as_ref().unwrap());
+                if let Some(tds) = output.tds_port {
+                    println!("  TDS port: {}", tds);
+                }
                 println!();
                 println!("URI: {}", output.uri.as_ref().unwrap());
             } else if output.data_dir.is_some() {
@@ -1602,6 +1763,7 @@ fn list(output_format: OutputFormat) -> Result<(), CliError> {
                     info.username, info.password, info.port, info.database
                 );
                 InfoOutput {
+                    tds_port: info.tds_port,
                     name: name.clone(),
                     running: true,
                     pid: info.pid,
@@ -1614,6 +1776,7 @@ fn list(output_format: OutputFormat) -> Result<(), CliError> {
                 }
             } else {
                 InfoOutput {
+                    tds_port: info.tds_port,
                     name: name.clone(),
                     running: false,
                     pid: None,
@@ -1733,6 +1896,7 @@ mod tests {
             password: "postgres".to_string(),
             database: "postgres".to_string(),
             version: "18.1.0".to_string(),
+            tds_port: None,
         }
     }
 
@@ -1883,7 +2047,7 @@ mod tests {
     fn init_data_dir_uses_c_locale() {
         let test_dir = unique_dir("pg0-initdb");
         let version_dir =
-            extract_bundled_postgresql(&test_dir.join("installation"), env!("PG_VERSION")).unwrap();
+            extract_bundled_postgresql(&test_dir.join("installation"), DEFAULT_PG_VERSION).unwrap();
         let data_dir = test_dir.join("data");
         fs::create_dir_all(&data_dir).unwrap();
 
@@ -1955,10 +2119,24 @@ fn main() {
             password,
             database,
             config,
+            #[cfg(feature = "babelfish")]
+            babelfish,
+            #[cfg(feature = "babelfish")]
+            tds_port,
+            #[cfg(feature = "babelfish")]
+            babelfish_migration_mode,
         } => {
             let port_was_specified = port.is_some();
             let port = port.unwrap_or(5432);
-            start(name, port, port_was_specified, version, data_dir, username, password, database, config)
+            #[cfg(feature = "babelfish")]
+            let bbf = babelfish.then(|| BabelfishConfig {
+                tds_port,
+                migration_mode: babelfish_migration_mode,
+                database: database.clone(),
+            });
+            #[cfg(not(feature = "babelfish"))]
+            let bbf: Option<BabelfishConfig> = None;
+            start(name, port, port_was_specified, version, data_dir, username, password, database, config, bbf)
         }
         Commands::Stop { name, timeout } => stop(name, timeout),
         Commands::Drop { name, force } => drop_instance(name, force),

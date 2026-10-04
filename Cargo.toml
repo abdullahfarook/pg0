@@ -10,6 +10,11 @@ repository = "https://github.com/vectorize-io/pg0"
 name = "pg0"
 path = "src/main.rs"
 
+[features]
+# Bundle the Babelfish PostgreSQL fork (T-SQL/TDS) instead of the theseus-rs PostgreSQL.
+# Linux gnu x86_64/aarch64 only; the build fails if any component is missing.
+babelfish = []
+
 [dependencies]
 postgresql_embedded = { version = "0.20", default-features = false, features = ["blocking", "theseus", "rustls"] }
 postgresql_extensions = { version = "0.20", default-features = false, features = ["blocking", "rustls", "portal-corp", "steampipe", "tensor-chord"] }

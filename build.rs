@@ -42,9 +42,125 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    bundle_postgresql(&pg_version, &out_dir);
-    bundle_pgvector(&pg_version, &pgvector_tag, &pgvector_repo, &out_dir);
+    println!("cargo:rerun-if-env-changed=PG0_BABELFISH_BUNDLE");
+    if env::var_os("CARGO_FEATURE_BABELFISH").is_some() {
+        println!("cargo:rustc-env=BABELFISH_PG_VERSION={}", get("BABELFISH_PG_VERSION"));
+        bundle_babelfish(&versions, &out_dir);
+    } else {
+        println!("cargo:rustc-env=BABELFISH_PG_VERSION=");
+        bundle_postgresql(&pg_version, &out_dir);
+        bundle_pgvector(&pg_version, &pgvector_tag, &pgvector_repo, &out_dir);
+    }
     bundle_runtime_libs(&versions, &out_dir);
+}
+
+/// Members every Babelfish bundle must contain. A missing one fails the build:
+/// a bundle without them would start as plain PostgreSQL and silently lack T-SQL.
+const BABELFISH_REQUIRED: &[&str] = &[
+    "bin/postgres",
+    "bin/initdb",
+    "bin/pg_ctl",
+    "bin/psql",
+    "bin/pgbouncer",
+    "lib/postgresql/babelfishpg_common.so",
+    "lib/postgresql/babelfishpg_money.so",
+    "lib/postgresql/babelfishpg_tds.so",
+    "lib/postgresql/babelfishpg_tsql.so",
+    "lib/postgresql/vector.so",
+    "share/postgresql/extension/babelfishpg_tds.control",
+    "share/postgresql/extension/babelfishpg_tsql.control",
+    "share/postgresql/extension/vector.control",
+];
+
+/// Babelfish flavor: the bundled PostgreSQL is the Babelfish fork, shipped with the
+/// extensions, ANTLR4 runtime, pgvector and pgbouncer in a single tarball. Replaces
+/// both the theseus-rs PostgreSQL and the separate pgvector bundle. Linux gnu only.
+fn bundle_babelfish(versions: &HashMap<String, String>, out_dir: &PathBuf) {
+    let target = env::var("TARGET").unwrap();
+    let (platform, sha_key) = match target.as_str() {
+        "x86_64-unknown-linux-gnu" => ("x86_64-unknown-linux-gnu", "BABELFISH_BUNDLE_SHA256_X86_64"),
+        "aarch64-unknown-linux-gnu" => ("aarch64-unknown-linux-gnu", "BABELFISH_BUNDLE_SHA256_AARCH64"),
+        _ => panic!(
+            "--features babelfish supports only x86_64/aarch64-unknown-linux-gnu (got {})",
+            target
+        ),
+    };
+    let get = |k: &str| -> String {
+        versions
+            .get(k)
+            .unwrap_or_else(|| panic!("Missing {} in versions.env", k))
+            .clone()
+    };
+    let pg_major = get("BABELFISH_PG_VERSION")
+        .split('.')
+        .next()
+        .unwrap_or("18")
+        .to_string();
+    let filename = format!("babelfish-{}-pg{}.tar.gz", platform, pg_major);
+
+    // PG0_BABELFISH_BUNDLE lets developers test a locally built tarball before it is released.
+    let bundle_path = if let Some(local) = env::var_os("PG0_BABELFISH_BUNDLE") {
+        let local = PathBuf::from(local);
+        assert!(local.is_file(), "PG0_BABELFISH_BUNDLE={} does not exist", local.display());
+        println!("cargo:rerun-if-changed={}", local.display());
+        local
+    } else {
+        let sha = get(sha_key);
+        assert!(
+            !sha.is_empty(),
+            "{} is empty in versions.env - refusing to bundle an unverified Babelfish build",
+            sha_key
+        );
+        let url = format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            get("BABELFISH_COMPILED_REPO"),
+            get("BABELFISH_COMPILED_TAG"),
+            filename
+        );
+        let path = out_dir.join(&filename);
+        if !path.exists() {
+            eprintln!("Downloading Babelfish bundle for {}...", platform);
+            download_file(&url, &path)
+                .unwrap_or_else(|e| panic!("Failed to download Babelfish bundle: {}", e));
+        }
+        verify_sha256(&path, &sha);
+        path
+    };
+
+    verify_babelfish_members(&bundle_path);
+
+    println!("cargo:rustc-env=POSTGRESQL_BUNDLE_PATH={}", bundle_path.display());
+    // pgvector ships inside the Babelfish bundle.
+    let marker = out_dir.join("pgvector_bundle.tar.gz");
+    fs::write(&marker, b"").expect("Failed to create empty pgvector marker");
+    println!("cargo:rustc-env=PGVECTOR_BUNDLE_PATH={}", marker.display());
+}
+
+fn verify_babelfish_members(bundle: &Path) {
+    let file = File::open(bundle).expect("open Babelfish bundle");
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut found: Vec<String> = Vec::new();
+    for entry in archive.entries().expect("read Babelfish bundle") {
+        let entry = entry.expect("read Babelfish bundle entry");
+        let p = entry.path().expect("entry path");
+        // pg0 strips the first path component on extract, so members are checked relative to it.
+        let rel: PathBuf = p.components().skip(1).collect();
+        found.push(rel.to_string_lossy().to_string());
+    }
+    let mut missing: Vec<&str> = BABELFISH_REQUIRED
+        .iter()
+        .copied()
+        .filter(|req| !found.iter().any(|f| f == req))
+        .collect();
+    if !found.iter().any(|f| f.starts_with("lib/libantlr4-runtime.so")) {
+        missing.push("lib/libantlr4-runtime.so*");
+    }
+    assert!(
+        missing.is_empty(),
+        "Babelfish bundle {} is missing required files: {:?}",
+        bundle.display(),
+        missing
+    );
 }
 
 fn bundle_postgresql(pg_version: &str, out_dir: &PathBuf) {
@@ -204,6 +320,13 @@ fn download_file(url: &str, dest: &PathBuf) -> io::Result<()> {
 fn bundle_runtime_libs(versions: &HashMap<String, String>, out_dir: &PathBuf) {
     let target = env::var("TARGET").unwrap();
     let bundle_path = out_dir.join("runtime_libs.tar.gz");
+
+    // The Babelfish bundle already carries its own libxml2/ICU (relocated with $ORIGIN rpath).
+    if env::var_os("CARGO_FEATURE_BABELFISH").is_some() {
+        fs::write(&bundle_path, b"").expect("Failed to write empty runtime libs bundle");
+        println!("cargo:rustc-env=RUNTIME_LIBS_BUNDLE_PATH={}", bundle_path.display());
+        return;
+    }
 
     let arch = match target.as_str() {
         "x86_64-unknown-linux-gnu" => "AMD64",

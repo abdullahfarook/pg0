@@ -507,6 +507,37 @@ To use a specific port, specify it explicitly:
 pg0 start --port 5433
 ```
 
+## Babelfish (T-SQL / SQL Server protocol)
+
+A separate flavor, `pg0-babelfish`, bundles the [Babelfish](https://babelfishpg.org) PostgreSQL fork
+with its four extensions (`babelfishpg_common`, `_money`, `_tds`, `_tsql`), the ANTLR4 runtime,
+pgvector and pgbouncer. SQL Server clients (sqlcmd, SSMS, JDBC/ODBC/pymssql) can connect to it.
+
+```bash
+pg0-babelfish start --babelfish                      # PostgreSQL on 5432, TDS on 1433
+pg0-babelfish start --babelfish --tds-port 11433 --babelfish-migration-mode single-db
+tsql -H 127.0.0.1 -p 1433 -U postgres -P postgres -D master
+```
+
+`--babelfish` writes the required settings (`shared_preload_libraries`, `babelfishpg_tds.port`,
+`babelfishpg_tsql.database_name`, `babelfishpg_tsql.migration_mode`, ...) before first start and runs
+`sys.initialize_babelfish` once; a `.pg0_babelfish_initialized` marker in the data dir prevents re-runs.
+Explicit `-c key=value` options override the defaults. The cluster is always created as UTF8, which
+Babelfish requires. `pg0 info` shows the TDS port.
+
+Platforms: Linux x86_64 and aarch64 (glibc) only for now. Instances live in
+`~/.pg0/installation-babelfish`, separate from stock PostgreSQL installs.
+
+Build from source (the bundle is produced by `babelfish_compiled/` on Ubuntu 22.04 for a glibc 2.35 baseline):
+
+```bash
+cargo build --release --features babelfish                  # downloads + sha256-verifies the bundle
+PG0_BABELFISH_BUNDLE=/path/to/bundle.tar.gz cargo build --release --features babelfish   # local bundle
+```
+
+The build fails if the bundle is missing, its sha256 (`versions.env`) doesn't match, or a required
+file is absent. There is no fallback to stock PostgreSQL.
+
 ## Build from Source
 
 ```bash
