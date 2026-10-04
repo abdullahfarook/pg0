@@ -19,7 +19,7 @@ required-features = ["babelfish"]
 [features]
 # Bundle the Babelfish PostgreSQL fork (T-SQL/TDS) instead of the theseus-rs PostgreSQL.
 # Linux gnu x86_64/aarch64 only; the build fails if any component is missing.
-babelfish = []
+babelfish = ["dep:rcgen"]
 
 [dependencies]
 postgresql_embedded = { version = "0.20", default-features = false, features = ["blocking", "theseus", "rustls"] }
@@ -33,6 +33,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1"
 tar = "0.4"
+# Self-signed TLS certificate for the Babelfish TDS endpoint (pure Rust, no openssl binary needed).
+rcgen = { version = "0.13", optional = true }
 
 # ZIP extraction for the Windows PostgreSQL bundle, which theseus-rs ships as
 # .zip (unlike every other platform's tar.gz). Only pulled in on Windows

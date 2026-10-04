@@ -537,6 +537,13 @@ bflocaldb delete dev                  # stops and removes the instance and its d
 bflocaldb versions
 ```
 
+The TDS endpoint offers TLS with a self-signed certificate (`server.crt` / `server.key` in the instance data dir,
+generated once and kept across restarts), so clients that require encryption can connect. Because the certificate is
+self-signed, use `TrustServerCertificate=True` (ADO.NET/JDBC), `-C` (sqlcmd) or equivalent; `bflocaldb connection` prints
+strings that do. `bflocaldb create --no-tls` turns it off (`ssl=off`). Note that Microsoft's ODBC driver rejects IP-literal
+connections to a certificate with only an IP SAN and resolves the name `localhost` to `127.0.1.1` on Debian/Ubuntu-style
+hosts, so use `127.0.0.1` as the server address.
+
 Instances listen on localhost only unless created with `--share`; the default login is `postgres`/`postgres`
 (`--user`, `--password` to change). `bflocaldb` stores ports and credentials in `~/.pg0/bflocaldb/` and runs the
 instance through `pg0-babelfish` (it appears there as `bf-<name>`), so keep the two binaries together.

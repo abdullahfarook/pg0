@@ -49,6 +49,7 @@ fn main() {
         bundle_babelfish(&versions, &out_dir);
     } else {
         println!("cargo:rustc-env=BABELFISH_PG_VERSION=");
+        println!("cargo:rustc-env=BABELFISH_BUNDLE_ID=");
         println!("cargo:rustc-env=BABELFISH_VERSION=");
         bundle_postgresql(&pg_version, &out_dir);
         bundle_pgvector(&pg_version, &pgvector_tag, &pgvector_repo, &out_dir);
@@ -132,6 +133,9 @@ fn bundle_babelfish(versions: &HashMap<String, String>, out_dir: &PathBuf) {
     verify_babelfish_members(&bundle_path);
 
     println!("cargo:rustc-env=POSTGRESQL_BUNDLE_PATH={}", bundle_path.display());
+    // pg0 re-extracts its install when this changes (the PG version alone does not identify a bundle).
+    let bytes = fs::read(&bundle_path).expect("read Babelfish bundle");
+    println!("cargo:rustc-env=BABELFISH_BUNDLE_ID={}", hex::encode(Sha256::digest(&bytes)));
     // pgvector ships inside the Babelfish bundle.
     let marker = out_dir.join("pgvector_bundle.tar.gz");
     fs::write(&marker, b"").expect("Failed to create empty pgvector marker");

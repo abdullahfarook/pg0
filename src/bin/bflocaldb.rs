@@ -37,6 +37,9 @@ enum Commands {
         /// Listen on all interfaces instead of localhost only
         #[arg(long)]
         share: bool,
+        /// Disable TLS (by default the TDS endpoint offers encryption with a self-signed certificate)
+        #[arg(long)]
+        no_tls: bool,
         /// Babelfish migration mode
         #[arg(long, default_value = "multi-db", value_parser = ["multi-db", "single-db"])]
         migration_mode: String,
@@ -98,6 +101,12 @@ struct Config {
     username: String,
     password: String,
     share: bool,
+    #[serde(default = "yes")]
+    tls: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn fail(msg: impl AsRef<str>) -> ! {
@@ -219,6 +228,9 @@ fn start_instance(cfg: &Config) {
     if cfg.share {
         args.extend(s(&["-c", "listen_addresses=*", "-c", "babelfishpg_tds.listen_addresses=*"]));
     }
+    if !cfg.tls {
+        args.extend(s(&["-c", "ssl=off"]));
+    }
     pg0_ok(&args, "start");
     println!("Instance \"{}\" started. TDS port {}.", cfg.name, cfg.tds_port);
 }
@@ -226,17 +238,23 @@ fn start_instance(cfg: &Config) {
 fn connection_string(cfg: &Config, f: Format) -> String {
     let host = "127.0.0.1";
     let (u, p) = (&cfg.username, &cfg.password);
+    // The certificate is self-signed, so TLS clients must trust it explicitly.
+    let (ado, odbc, jdbc) = if cfg.tls {
+        ("Encrypt=True", "Encrypt=yes", "encrypt=true")
+    } else {
+        ("Encrypt=False", "Encrypt=no", "encrypt=false")
+    };
     match f {
         Format::Ado => format!(
-            "Server={host},{};Database=master;User Id={u};Password={p};Encrypt=False;TrustServerCertificate=True",
+            "Server={host},{};Database=master;User Id={u};Password={p};{ado};TrustServerCertificate=True",
             cfg.tds_port
         ),
         Format::Odbc => format!(
-            "Driver={{ODBC Driver 18 for SQL Server}};Server={host},{};Database=master;UID={u};PWD={p};Encrypt=no;TrustServerCertificate=yes",
+            "Driver={{ODBC Driver 18 for SQL Server}};Server={host},{};Database=master;UID={u};PWD={p};{odbc};TrustServerCertificate=yes",
             cfg.tds_port
         ),
         Format::Jdbc => format!(
-            "jdbc:sqlserver://{host}:{};databaseName=master;user={u};password={p};encrypt=false;trustServerCertificate=true",
+            "jdbc:sqlserver://{host}:{};databaseName=master;user={u};password={p};{jdbc};trustServerCertificate=true",
             cfg.tds_port
         ),
         Format::Postgres => format!("postgresql://{u}:{p}@{host}:{}/postgres", cfg.port),
@@ -245,7 +263,7 @@ fn connection_string(cfg: &Config, f: Format) -> String {
 
 fn main() {
     match Cli::parse().command {
-        Commands::Create { name, start, share, migration_mode, user, password, port, tds_port } => {
+        Commands::Create { name, start, share, no_tls, migration_mode, user, password, port, tds_port } => {
             if !valid_name(&name) {
                 fail("instance names may contain letters, digits, '-' and '_' (max 32 characters)");
             }
@@ -259,7 +277,7 @@ fn main() {
             if port == tds_port || taken.contains(&port) || taken.contains(&tds_port) {
                 fail("the requested ports are already used by another instance");
             }
-            let cfg = Config { name: name.clone(), port, tds_port, migration_mode, username: user, password, share };
+            let cfg = Config { name: name.clone(), port, tds_port, migration_mode, username: user, password, share, tls: !no_tls };
             fs::create_dir_all(registry_dir()).unwrap_or_else(|e| fail(e.to_string()));
             fs::write(config_path(&name), serde_json::to_string_pretty(&cfg).unwrap())
                 .unwrap_or_else(|e| fail(e.to_string()));
@@ -309,7 +327,7 @@ fn main() {
                 let v = serde_json::json!({
                     "name": cfg.name, "state": if running { "Running" } else { "Stopped" },
                     "postgres_version": version, "port": cfg.port, "tds_port": cfg.tds_port,
-                    "migration_mode": cfg.migration_mode, "owner": cfg.username, "shared": cfg.share,
+                    "migration_mode": cfg.migration_mode, "owner": cfg.username, "shared": cfg.share, "tls": cfg.tls,
                     "data_dir": data_dir, "pid": st["pid"],
                     "connection": connection_string(&cfg, Format::Ado),
                 });
@@ -319,6 +337,10 @@ fn main() {
                 println!("PostgreSQL version: {}", version);
                 println!("State:              {}", if running { "Running" } else { "Stopped" });
                 println!("Shared:             {}", if cfg.share { "all interfaces" } else { "localhost only" });
+                println!("Encryption:         {}", if cfg.tls { "TLS, self-signed certificate" } else { "off" });
+                if cfg.tls {
+                    println!("Certificate:        {}/server.crt", data_dir);
+                }
                 println!("Migration mode:     {}", cfg.migration_mode);
                 println!("Owner:              {}", cfg.username);
                 println!("PostgreSQL port:    {}", cfg.port);

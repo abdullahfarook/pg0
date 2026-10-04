@@ -531,12 +531,27 @@ fn extract_postgresql_archive(bundle: &[u8], version_dir: &std::path::Path) -> R
 
 /// Extract the bundled PostgreSQL to the installation directory
 /// Returns the path to the version-specific directory (e.g., ~/.pg0/installation/18.1.0)
+/// Whether the install in `version_dir` came from the bundle embedded in this binary. The Babelfish
+/// bundle is identified by content hash: rebuilding it does not change the PostgreSQL version.
+#[cfg(feature = "babelfish")]
+fn bundle_is_current(version_dir: &Path) -> bool {
+    fs::read_to_string(version_dir.join(".bundle-id"))
+        .map(|id| id.trim() == env!("BABELFISH_BUNDLE_ID"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(feature = "babelfish"))]
+fn bundle_is_current(_version_dir: &Path) -> bool {
+    true
+}
+
 fn extract_bundled_postgresql(installation_dir: &PathBuf, pg_version: &str) -> Result<PathBuf, CliError> {
     let version_dir = installation_dir.join(pg_version);
 
     // Check if already extracted
     let bin_dir = version_dir.join("bin");
-    let already_extracted = bin_dir.exists() && bin_dir.join(POSTGRES_BINARY).exists();
+    let already_extracted =
+        bin_dir.exists() && bin_dir.join(POSTGRES_BINARY).exists() && bundle_is_current(&version_dir);
 
     if !already_extracted {
         if POSTGRESQL_BUNDLE.is_empty() {
@@ -547,6 +562,11 @@ fn extract_bundled_postgresql(installation_dir: &PathBuf, pg_version: &str) -> R
 
         println!("Extracting bundled PostgreSQL {}...", pg_version);
         fs::create_dir_all(&version_dir)?;
+        // Replace an install left by a different bundle with the same PostgreSQL version.
+        #[cfg(feature = "babelfish")]
+        for sub in ["bin", "lib", "share"] {
+            let _ = fs::remove_dir_all(version_dir.join(sub));
+        }
 
         extract_postgresql_archive(POSTGRESQL_BUNDLE, &version_dir)?;
 
@@ -591,6 +611,11 @@ fn extract_bundled_postgresql(installation_dir: &PathBuf, pg_version: &str) -> R
         }
     } else {
         tracing::debug!("PostgreSQL already extracted at {}", version_dir.display());
+    }
+
+    #[cfg(feature = "babelfish")]
+    if !already_extracted {
+        fs::write(version_dir.join(".bundle-id"), env!("BABELFISH_BUNDLE_ID"))?;
     }
 
     // Always ensure the runtime libs are unpacked and LD_LIBRARY_PATH points
@@ -860,12 +885,47 @@ fn babelfish_gucs(b: &BabelfishConfig) -> Vec<(String, String)> {
         ("shared_preload_libraries".into(), "babelfishpg_tds".into()),
         ("babelfishpg_tds.listen_addresses".into(), "localhost".into()),
         ("babelfishpg_tds.port".into(), b.tds_port.to_string()),
+        // TDS encryption reuses PostgreSQL's SSL setup (server.crt / server.key in the data dir,
+        // created by `ensure_tls_cert`). Without `ssl=on` the server answers "encryption not
+        // supported" and clients that require encryption (the ODBC 18 default) cannot connect.
+        ("ssl".into(), "on".into()),
+        // PostgreSQL 18's default ssl_groups is the list "X25519:prime256v1", but babelfishpg_tds
+        // still resolves the value as a single curve name (OBJ_sn2nid) and the postmaster dies with
+        // "ECDH: unrecognized curve name". A single curve avoids that.
+        ("ssl_groups".into(), "prime256v1".into()),
         // Must be in postgresql.conf before first start: via ALTER SYSTEM + pg_reload_conf()
         // the reload is asynchronous and sys.initialize_babelfish() can still see the
         // built-in default database name ("babelfish_db") and fail.
         ("babelfishpg_tsql.database_name".into(), b.database.clone()),
         ("babelfishpg_tsql.migration_mode".into(), b.migration_mode.clone()),
     ]
+}
+
+/// Create `server.crt` / `server.key` in the data dir if absent: a self-signed certificate for
+/// localhost, 127.0.0.1 and ::1. Kept across restarts so a client that trusts it keeps trusting it.
+/// The key is written 0600, which PostgreSQL requires.
+#[cfg(feature = "babelfish")]
+fn ensure_tls_cert(data_dir: &Path) -> Result<(), CliError> {
+    let (crt, key) = (data_dir.join("server.crt"), data_dir.join("server.key"));
+    if crt.exists() && key.exists() {
+        return Ok(());
+    }
+    let names = vec!["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()];
+    let tls_err = |e: rcgen::Error| CliError::Other(format!("Failed to generate the TLS certificate: {}", e));
+    let mut params = rcgen::CertificateParams::new(names).map_err(tls_err)?;
+    params.distinguished_name.push(rcgen::DnType::CommonName, "localhost");
+    let key_pair = rcgen::KeyPair::generate().map_err(tls_err)?;
+    let cert = params.self_signed(&key_pair).map_err(tls_err)?;
+    fs::write(&crt, cert.pem())?;
+    {
+        use std::io::Write;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        opts.open(&key)?.write_all(key_pair.serialize_pem().as_bytes())?;
+    }
+    Ok(())
 }
 
 /// Run the one-time Babelfish initialization (extension + `sys.initialize_babelfish`). A marker file in the data dir makes it idempotent;
@@ -1022,6 +1082,11 @@ fn start(
     #[cfg(any(windows, feature = "babelfish"))]
     if !data_dir.join("postgresql.conf").exists() {
         init_data_dir(&version_install_dir, &data_dir, &password)?;
+    }
+
+    #[cfg(feature = "babelfish")]
+    if babelfish.is_some() {
+        ensure_tls_cert(&data_dir)?;
     }
 
     let settings = Settings {
