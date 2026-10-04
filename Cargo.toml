@@ -10,6 +10,12 @@ repository = "https://github.com/vectorize-io/pg0"
 name = "pg0"
 path = "src/main.rs"
 
+# sqllocaldb-style manager for local Babelfish instances; drives the `pg0-babelfish` binary.
+[[bin]]
+name = "bflocaldb"
+path = "src/bin/bflocaldb.rs"
+required-features = ["babelfish"]
+
 [features]
 # Bundle the Babelfish PostgreSQL fork (T-SQL/TDS) instead of the theseus-rs PostgreSQL.
 # Linux gnu x86_64/aarch64 only; the build fails if any component is missing.

@@ -852,10 +852,13 @@ fn install_pgvector(installation_dir: &PathBuf, pg_version: &str) -> Result<(), 
 #[cfg(feature = "babelfish")]
 fn babelfish_gucs(b: &BabelfishConfig) -> Vec<(String, String)> {
     vec![
-        ("listen_addresses".into(), "*".into()),
+        // Loopback only, on IPv4 and IPv6: `localhost` resolves to ::1 first on many hosts and
+        // some drivers (Microsoft ODBC) do not fall back to 127.0.0.1. Expose with
+        // `-c listen_addresses=* -c babelfishpg_tds.listen_addresses=*`.
+        ("listen_addresses".into(), "localhost".into()),
         ("allow_system_table_mods".into(), "on".into()),
         ("shared_preload_libraries".into(), "babelfishpg_tds".into()),
-        ("babelfishpg_tds.listen_addresses".into(), "*".into()),
+        ("babelfishpg_tds.listen_addresses".into(), "localhost".into()),
         ("babelfishpg_tds.port".into(), b.tds_port.to_string()),
         // Must be in postgresql.conf before first start: via ALTER SYSTEM + pg_reload_conf()
         // the reload is asynchronous and sys.initialize_babelfish() can still see the

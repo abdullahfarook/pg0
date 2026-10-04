@@ -519,10 +519,32 @@ pg0-babelfish start --babelfish --tds-port 11433 --babelfish-migration-mode sing
 tsql -H 127.0.0.1 -p 1433 -U postgres -P postgres -D master
 ```
 
+### Install globally and manage instances with `bflocaldb`
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abdullahfarook/pg0/main/install-babelfish.sh | bash
+# system-wide: INSTALL_DIR=/usr/local/bin sudo -E bash install-babelfish.sh
+```
+
+This installs `pg0-babelfish` and `bflocaldb`, a small `sqllocaldb`-style manager for named local instances:
+
+```bash
+bflocaldb create dev -s               # reserve stable ports, create and start (add --share to listen on all interfaces)
+bflocaldb info                        # list instances;  bflocaldb info dev  shows state, ports, data dir, connection
+bflocaldb connection dev              # ADO.NET string (-f odbc | jdbc | postgres) for scripts
+bflocaldb stop dev && bflocaldb start dev
+bflocaldb delete dev                  # stops and removes the instance and its data
+bflocaldb versions
+```
+
+Instances listen on localhost only unless created with `--share`; the default login is `postgres`/`postgres`
+(`--user`, `--password` to change). `bflocaldb` stores ports and credentials in `~/.pg0/bflocaldb/` and runs the
+instance through `pg0-babelfish` (it appears there as `bf-<name>`), so keep the two binaries together.
+
 `--babelfish` writes the required settings (`shared_preload_libraries`, `babelfishpg_tds.port`,
 `babelfishpg_tsql.database_name`, `babelfishpg_tsql.migration_mode`, ...) before first start and runs
 `sys.initialize_babelfish` once; a `.pg0_babelfish_initialized` marker in the data dir prevents re-runs.
-Explicit `-c key=value` options override the defaults. The cluster is always created as UTF8, which
+Both PostgreSQL and TDS listen on loopback only (`localhost`, i.e. 127.0.0.1 and ::1) by default; expose them with `-c listen_addresses=* -c babelfishpg_tds.listen_addresses=*`. Explicit `-c key=value` options override the defaults. The cluster is always created as UTF8, which
 Babelfish requires. `pg0 info` shows the TDS port.
 
 Platforms: Linux x86_64 and aarch64 (glibc) only for now. Instances live in

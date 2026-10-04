@@ -45,9 +45,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PG0_BABELFISH_BUNDLE");
     if env::var_os("CARGO_FEATURE_BABELFISH").is_some() {
         println!("cargo:rustc-env=BABELFISH_PG_VERSION={}", get("BABELFISH_PG_VERSION"));
+        println!("cargo:rustc-env=BABELFISH_VERSION={}", get("BABELFISH_VERSION"));
         bundle_babelfish(&versions, &out_dir);
     } else {
         println!("cargo:rustc-env=BABELFISH_PG_VERSION=");
+        println!("cargo:rustc-env=BABELFISH_VERSION=");
         bundle_postgresql(&pg_version, &out_dir);
         bundle_pgvector(&pg_version, &pgvector_tag, &pgvector_repo, &out_dir);
     }

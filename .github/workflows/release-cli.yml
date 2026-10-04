@@ -133,16 +133,19 @@ jobs:
       - name: Build
         run: cargo build --release --features babelfish --target ${{ matrix.target }}
 
-      - name: Prepare artifact
+      - name: Prepare artifacts
         run: |
           cp target/${{ matrix.target }}/release/pg0 pg0-babelfish-${{ matrix.name }}
-          chmod +x pg0-babelfish-${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/bflocaldb bflocaldb-${{ matrix.name }}
+          chmod +x pg0-babelfish-${{ matrix.name }} bflocaldb-${{ matrix.name }}
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: cli-babelfish-${{ matrix.name }}
-          path: pg0-babelfish-${{ matrix.name }}
+          path: |
+            pg0-babelfish-${{ matrix.name }}
+            bflocaldb-${{ matrix.name }}
 
   build-python-wheels:
     name: Build Python wheel (${{ matrix.platform }})
@@ -319,7 +322,7 @@ jobs:
           - `pg0-linux-aarch64-gnu` - Linux ARM64 for Debian/Ubuntu (glibc)
           - `pg0-linux-aarch64-musl` - Linux ARM64 for Alpine (musl, statically linked)
           - `pg0-windows-x86_64.exe` - Windows x64
-          - `pg0-babelfish-linux-x86_64-gnu` / `pg0-babelfish-linux-aarch64-gnu` - Linux glibc with Babelfish (T-SQL over TDS); run `pg0-babelfish start --babelfish`
+          - `pg0-babelfish-linux-x86_64-gnu` / `pg0-babelfish-linux-aarch64-gnu` - Linux glibc with Babelfish (T-SQL over TDS); run `pg0-babelfish start --babelfish`, plus `bflocaldb-linux-*` (sqllocaldb-style manager). Install both with `install-babelfish.sh`
 
           ### Python Package
           Install from PyPI:
