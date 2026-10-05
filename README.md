@@ -551,6 +551,23 @@ instance through `pg0-babelfish` (it appears there as `bf-<name>`), so keep the 
 `--babelfish` writes the required settings (`shared_preload_libraries`, `babelfishpg_tds.port`,
 `babelfishpg_tsql.database_name`, `babelfishpg_tsql.migration_mode`, ...) before first start and runs
 `sys.initialize_babelfish` once; a `.pg0_babelfish_initialized` marker in the data dir prevents re-runs.
+pgvector is installed into the `sys` schema on first start (marker `.pg0_babelfish_vector`), so T-SQL clients on the TDS port can use it:
+
+```sql
+CREATE TABLE docs (id int PRIMARY KEY, body nvarchar(200), emb vector(3));
+INSERT INTO docs VALUES (1, 'a', '[1,2,3]'), (2, 'b', '[4,5,6]');
+SELECT TOP 5 id FROM docs ORDER BY vector_distance('cosine', emb, '[1,2,3]');   -- or l2_distance / cosine_distance
+CREATE INDEX ix ON docs USING hnsw (emb vector_cosine_ops);
+```
+
+Native vectors: the bundle's `babelfishpg_tds` implements SQL Server 2025's binary `vector` type (TDS type 0xF5, float32). A client
+that asks for it at login (Microsoft.Data.SqlClient 6.1+) gets `vector` columns as binary and can send binary parameters, so
+`Microsoft.Data.SqlTypes.SqlVector<float>` and EF Core 10's `SqlVector<float>` properties, `vector(n)` column types and
+`EF.Functions.VectorDistance("cosine"|"euclidean"|"dot", column, queryVector)` work, including migrations and batched inserts.
+Clients that don't ask (sqlcmd, pymssql, JDBC, older SqlClient) get the text form (`'[1,2,3]'`) as varchar, which also works for
+writing. Only float32 vectors of up to 1998 dimensions fit the TDS type; `halfvec` and `sparsevec` are text-only. Upstream Babelfish
+also parses the pgvector operators (`<->`, `<=>`, `<#>`, `<+>`, `||`) and `USING hnsw|ivfflat (col vector_*_ops)` in T-SQL.
+
 Both PostgreSQL and TDS listen on loopback only (`localhost`, i.e. 127.0.0.1 and ::1) by default; expose them with `-c listen_addresses=* -c babelfishpg_tds.listen_addresses=*`. Explicit `-c key=value` options override the defaults. The cluster is always created as UTF8, which
 Babelfish requires. `pg0 info` shows the TDS port.
 

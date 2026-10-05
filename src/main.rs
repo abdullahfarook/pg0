@@ -87,6 +87,31 @@ struct BabelfishConfig {
 
 #[cfg(feature = "babelfish")]
 const BABELFISH_INIT_MARKER: &str = ".pg0_babelfish_initialized";
+/// Separate marker so instances created before vector support get it on their next start.
+const BABELFISH_VECTOR_MARKER: &str = ".pg0_babelfish_vector";
+
+/// pgvector inside the `sys` schema, where Babelfish resolves built-in types, so T-SQL can use `vector(n)`,
+/// the distance functions and hnsw/ivfflat indexes over TDS (the same layout upstream's vector tests use). A SQL Server
+/// 2025-style `VECTOR_DISTANCE(metric, a, b)` and a varchar -> vector implicit cast (for string parameters) are added.
+#[cfg(feature = "babelfish")]
+const BABELFISH_VECTOR_SQL: &str = r#"
+DO $do$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector' AND n.nspname <> 'sys') THEN
+    ALTER EXTENSION vector SET SCHEMA sys;
+  ELSE
+    CREATE EXTENSION IF NOT EXISTS vector SCHEMA sys;
+  END IF;
+END $do$;
+CREATE OR REPLACE FUNCTION sys.vector_distance(metric text, a sys.vector, b sys.vector) RETURNS float8
+  LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+  SELECT CASE lower(metric) WHEN 'cosine' THEN sys.cosine_distance(a, b) WHEN 'euclidean' THEN sys.l2_distance(a, b)
+         WHEN 'dot' THEN -sys.inner_product(a, b) ELSE NULL END $$;
+CREATE OR REPLACE FUNCTION sys.vector_from_varchar(sys.varchar) RETURNS sys.vector
+  LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT $1::text::sys.vector $$;
+DROP CAST IF EXISTS (sys.varchar AS sys.vector);
+CREATE CAST (sys.varchar AS sys.vector) WITH FUNCTION sys.vector_from_varchar(sys.varchar) AS IMPLICIT;
+"#;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -889,6 +914,9 @@ fn babelfish_gucs(b: &BabelfishConfig) -> Vec<(String, String)> {
         // created by `ensure_tls_cert`). Without `ssl=on` the server answers "encryption not
         // supported" and clients that require encryption (the ODBC 18 default) cannot connect.
         ("ssl".into(), "on".into()),
+        // T-SQL MERGE (incl. MERGE ... OUTPUT, which Entity Framework Core uses for batched inserts) is
+        // opt-in upstream and rejected while this is off.
+        ("babelfishpg_tsql.enable_tsql_merge".into(), "on".into()),
         // PostgreSQL 18's default ssl_groups is the list "X25519:prime256v1", but babelfishpg_tds
         // still resolves the value as a single curve name (OBJ_sn2nid) and the postmaster dies with
         // "ECDH: unrecognized curve name". A single curve avoids that.
@@ -964,6 +992,36 @@ fn init_babelfish_once(
                 String::from_utf8_lossy(&out.stderr)
             )));
         }
+    }
+    fs::write(&marker, b"")?;
+    Ok(())
+}
+
+/// Install pgvector for T-SQL (see `BABELFISH_VECTOR_SQL`). Runs once per data directory, after Babelfish is initialized.
+#[cfg(feature = "babelfish")]
+fn init_babelfish_vector_once(
+    installation_dir: &PathBuf,
+    data_dir: &Path,
+    port: u16,
+    password: &str,
+    b: &BabelfishConfig,
+) -> Result<(), CliError> {
+    let marker = data_dir.join(BABELFISH_VECTOR_MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+    let psql = find_psql_binary(installation_dir)?;
+    let uri = format!("postgresql://postgres:{}@127.0.0.1:{}/{}", password, port, b.database);
+    let out = std::process::Command::new(&psql)
+        .arg(&uri)
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-1", "-c"])
+        .arg(BABELFISH_VECTOR_SQL)
+        .output()?;
+    if !out.status.success() {
+        return Err(CliError::Other(format!(
+            "Enabling pgvector for T-SQL failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
     }
     fs::write(&marker, b"")?;
     Ok(())
@@ -1168,6 +1226,7 @@ fn start(
     #[cfg(feature = "babelfish")]
     if let Some(b) = &babelfish {
         init_babelfish_once(&installation_dir, &data_dir, port, &username, &password, b)?;
+        init_babelfish_vector_once(&installation_dir, &data_dir, port, &password, b)?;
     }
 
     // Read PID from postmaster.pid file
