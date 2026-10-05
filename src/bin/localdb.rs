@@ -1,7 +1,7 @@
-//! bflocaldb - manage local Babelfish (T-SQL over TDS) instances from the command line,
+//! localdb - manage local Babelfish (T-SQL over TDS) instances from the command line,
 //! in the spirit of SQL Server's `sqllocaldb`.
 //!
-//! It owns a small registry of named instances (`~/.pg0/bflocaldb/<name>.json`: fixed ports,
+//! It owns a small registry of named instances (`~/.pg0/localdb/<name>.json`: fixed ports,
 //! credentials, sharing) and delegates the lifecycle to the `pg0-babelfish` binary, so the two
 //! tools never disagree about where an instance lives. Instances appear in `pg0-babelfish`
 //! as `bf-<name>`.
@@ -20,7 +20,7 @@ const DEFAULT_USER: &str = "postgres";
 const DEFAULT_PASSWORD: &str = "postgres";
 
 #[derive(Parser)]
-#[command(name = "bflocaldb", version, about = "Manage local Babelfish (T-SQL) instances, like sqllocaldb")]
+#[command(name = "localdb", version, about = "Manage local Babelfish (T-SQL) instances, like sqllocaldb")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -72,7 +72,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Print a connection string for scripts: `$(bflocaldb connection dev)`
+    /// Print a connection string for scripts: `$(localdb connection dev)`
     Connection {
         name: String,
         #[arg(short, long, value_enum, default_value_t = Format::Ado)]
@@ -118,7 +118,7 @@ fn registry_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| fail("cannot determine the home directory"))
         .join(".pg0")
-        .join("bflocaldb")
+        .join("localdb")
 }
 
 fn config_path(name: &str) -> PathBuf {
@@ -134,7 +134,7 @@ fn valid_name(name: &str) -> bool {
 fn load(name: &str) -> Config {
     let path = config_path(name);
     let text = fs::read_to_string(&path)
-        .unwrap_or_else(|_| fail(format!("instance \"{}\" does not exist (create it with `bflocaldb create {}`)", name, name)));
+        .unwrap_or_else(|_| fail(format!("instance \"{}\" does not exist (create it with `localdb create {}`)", name, name)));
     serde_json::from_str(&text).unwrap_or_else(|e| fail(format!("{}: {}", path.display(), e)))
 }
 
@@ -150,9 +150,9 @@ fn all_configs() -> Vec<Config> {
     out
 }
 
-/// The `pg0-babelfish` binary: $BFLOCALDB_PG0, then next to this executable, then PATH.
+/// The `pg0-babelfish` binary: $LOCALDB_PG0, then next to this executable, then PATH.
 fn pg0_binary() -> PathBuf {
-    if let Some(p) = std::env::var_os("BFLOCALDB_PG0") {
+    if let Some(p) = std::env::var_os("LOCALDB_PG0") {
         return PathBuf::from(p);
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -171,7 +171,7 @@ fn run_pg0(args: &[String]) -> process::Output {
         .output()
         .unwrap_or_else(|e| {
             fail(format!(
-                "cannot run {} ({}). Install pg0-babelfish next to bflocaldb or set BFLOCALDB_PG0.",
+                "cannot run {} ({}). Install pg0-babelfish next to localdb or set LOCALDB_PG0.",
                 pg0_binary().display(),
                 e
             ))
@@ -312,7 +312,7 @@ fn main() {
             if json {
                 println!("{}", serde_json::to_string_pretty(&names).unwrap());
             } else if names.is_empty() {
-                println!("No instances. Create one with `bflocaldb create <name> -s`.");
+                println!("No instances. Create one with `localdb create <name> -s`.");
             } else {
                 names.iter().for_each(|n| println!("{}", n));
             }

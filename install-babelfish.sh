@@ -1,11 +1,11 @@
 #!/bin/bash
-# Install pg0-babelfish and bflocaldb (local Babelfish / T-SQL instances) from a GitHub release.
+# Install pg0-babelfish and localdb (local Babelfish / T-SQL instances) from a GitHub release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/abdullahfarook/pg0/main/install-babelfish.sh | bash
 #   INSTALL_DIR=/usr/local/bin sudo -E bash install-babelfish.sh      # system-wide
 #
 # Env: REPO, VERSION (tag; default latest), INSTALL_DIR (default ~/.local/bin),
-#      PG0_BABELFISH_URL / BFLOCALDB_URL (override a download, supports file://).
+#      PG0_BABELFISH_URL / LOCALDB_URL (override a download, supports file://).
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -32,7 +32,7 @@ if command -v ldd >/dev/null 2>&1; then
 fi
 platform="linux-${arch}-gnu"
 
-if [ -z "${PG0_BABELFISH_URL:-}" ] || [ -z "${BFLOCALDB_URL:-}" ]; then
+if [ -z "${PG0_BABELFISH_URL:-}" ] || [ -z "${LOCALDB_URL:-}" ]; then
     version="${VERSION:-}"
     if [ -z "$version" ]; then
         auth=(); [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -41,7 +41,7 @@ if [ -z "${PG0_BABELFISH_URL:-}" ] || [ -z "${BFLOCALDB_URL:-}" ]; then
     fi
     base="https://github.com/${REPO}/releases/download/${version}"
     PG0_BABELFISH_URL="${PG0_BABELFISH_URL:-${base}/pg0-babelfish-${platform}}"
-    BFLOCALDB_URL="${BFLOCALDB_URL:-${base}/bflocaldb-${platform}}"
+    LOCALDB_URL="${LOCALDB_URL:-${base}/localdb-${platform}}"
     echo "Installing Babelfish tools ${version} (${platform})..."
 fi
 
@@ -55,15 +55,15 @@ fetch() { # url dest
 mkdir -p "$INSTALL_DIR"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fetch "$PG0_BABELFISH_URL" "$tmp/pg0-babelfish"
-fetch "$BFLOCALDB_URL" "$tmp/bflocaldb"
-chmod +x "$tmp/pg0-babelfish" "$tmp/bflocaldb"
-# bflocaldb looks for pg0-babelfish next to itself, so the two must be installed together.
+fetch "$LOCALDB_URL" "$tmp/localdb"
+chmod +x "$tmp/pg0-babelfish" "$tmp/localdb"
+# localdb looks for pg0-babelfish next to itself, so the two must be installed together.
 mv "$tmp/pg0-babelfish" "$INSTALL_DIR/pg0-babelfish"
-mv "$tmp/bflocaldb" "$INSTALL_DIR/bflocaldb"
+mv "$tmp/localdb" "$INSTALL_DIR/localdb"
 
-echo -e "${GREEN}Installed pg0-babelfish and bflocaldb to ${INSTALL_DIR}${NC}"
+echo -e "${GREEN}Installed pg0-babelfish and localdb to ${INSTALL_DIR}${NC}"
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     echo -e "${YELLOW}NOTE: ${INSTALL_DIR} is not in your PATH. Add: export PATH=\"\$PATH:${INSTALL_DIR}\"${NC}"
 fi
 echo
-echo "Try:  bflocaldb create dev -s && bflocaldb info dev"
+echo "Try:  localdb create dev -s && localdb info dev"

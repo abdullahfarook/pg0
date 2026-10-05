@@ -12,8 +12,8 @@ path = "src/main.rs"
 
 # sqllocaldb-style manager for local Babelfish instances; drives the `pg0-babelfish` binary.
 [[bin]]
-name = "bflocaldb"
-path = "src/bin/bflocaldb.rs"
+name = "localdb"
+path = "src/bin/localdb.rs"
 required-features = ["babelfish"]
 
 [features]
